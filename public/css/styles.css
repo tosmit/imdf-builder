@@ -404,6 +404,15 @@ header h1 {
     font-size: 12px;
 }
 
+.zoom-level-display {
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-muted);
+    min-width: 3.5em;
+    text-align: right;
+    user-select: none;
+}
+
 /* Modal styles */
 .modal {
     display: none;

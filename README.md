@@ -17,10 +17,20 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
   - Levels (floors)
 - ✏️ **Polygon Drawing**: Click to place vertices and double-click (or click the first vertex) to close any polygon shape
 - 🔴 **Vertex Editing**: Select a polygon and drag its orange vertex handles to reshape it
-- 🧲 **Edge Snapping**: Automatically snap to floor-plan lines while drawing or editing — toggle on/off per session
+- 🧲 **Smart Snapping**: Three-priority snap system while drawing or editing vertices:
+  1. **Vertex snap** — snaps exactly onto an existing polygon/line vertex
+  2. **Edge snap** — snaps to the nearest point on an existing polygon or line edge
+  3. **Image edge snap** — falls back to dark-pixel detection in the background floor plan image
+  - Toggle on/off with the **Edge Snapping** checkbox
 - 🔒 **Shift-Lock**: Hold Shift while drawing lines to constrain to 45° angles
+- 🔍 **Zoom & Pan**:
+  - Scroll wheel zooms toward the cursor position
+  - Toolbar **＋ / －** buttons zoom toward the canvas centre
+  - **Space + drag** or **middle-mouse drag** to pan the canvas
+  - Current zoom level shown in the toolbar
 - 💾 **Project Management**: Save and load projects for later editing; per-level floor plan images are saved with the project
 - 📦 **Export**: Generate a complete IMDF file package as a ZIP archive (includes `section.geojson` and all other required files)
+- 🗺️ **Correct GeoJSON orientation**: Exported coordinates negate the Y axis to match geographic convention (Y increases northward), and polygon transforms (scale, rotation) are fully baked into exported vertex positions
 - 🏷️ **Exchange Room ID**: Optionally set a Microsoft Exchange room identifier on any unit for Places integration
 - 🌓 **Dark Mode**: Toggle in the header; remembers your choice and follows your OS preference
 - 🐳 **Docker Support**: Easy deployment with Docker and Docker Compose
@@ -142,7 +152,17 @@ Use the **Footprints** tools to define the physical extents of your building and
 
 Click to place each vertex, then double-click (or click the first vertex) to close the polygon. Press **Escape** to cancel mid-draw.
 
-### Step 5: Place Items on the Floor Plan
+### Step 5: Navigate the Canvas
+
+| Action | How |
+|--------|-----|
+| **Zoom in/out** | Scroll wheel (zooms toward cursor) or toolbar ＋/－ buttons |
+| **Pan** | Hold **Space** and drag, or drag with the **middle mouse button** |
+| **Reset view** | Click **⤢ Reset View** in the toolbar |
+
+The current zoom percentage is shown in the toolbar next to the zoom buttons.
+
+### Step 6: Place Items on the Floor Plan
 Select a tool from the **Units & Spaces** or **Other** groups:
 
 | Tool | Description |
@@ -157,10 +177,11 @@ Select a tool from the **Units & Spaces** or **Other** groups:
 
 **Tips:**
 - Hold **Shift** while dragging a line to constrain it to 45° increments.
-- Enable **Edge Snapping** to have vertices automatically snap to floor-plan lines.
+- Enable **Edge Snapping** to snap vertices to existing objects first, then to floor-plan image lines as a fallback — this ensures adjacent units share exact vertices.
 - Select any polygon and drag its orange vertex dots to fine-tune its shape.
+- Zoom in before placing vertices on dense floor plans to get precise snapping results.
 
-### Step 6: Edit Item Properties
+### Step 7: Edit Item Properties
 1. Switch to **Select Mode**
 2. Click on any placed item
 3. Edit its properties in the **Selected Item Properties** panel:
@@ -175,7 +196,7 @@ Select a tool from the **Units & Spaces** or **Other** groups:
 #### Section categories
 `unspecified`, `nonpublic`, `publiccorridor`, `stairway`, `parking`
 
-### Step 7: Export IMDF Files
+### Step 8: Export IMDF Files
 1. Click the **Export IMDF Files** button in the right sidebar
 2. A ZIP file (`imdf-export.zip`) is downloaded containing all required IMDF files:
    - `venue.geojson`
@@ -190,7 +211,7 @@ Select a tool from the **Units & Spaces** or **Other** groups:
    - `manifest.json`
    - Additional empty files required by the IMDF spec
 
-### Step 8: Upload to Microsoft Places
+### Step 9: Upload to Microsoft Places
 1. Extract the downloaded ZIP file
 2. Follow Microsoft's documentation to upload the files to Microsoft Places
 3. Reference: [Configure Maps in Microsoft Places](https://learn.microsoft.com/en-us/microsoft-365/places/configure-maps-in-places)
@@ -204,6 +225,16 @@ This tool generates files that comply with the IMDF (Indoor Mapping Data Format)
 - Required properties for each feature type
 - WGS84 coordinate system (latitude/longitude)
 - Relationships between features (level references on units, sections, amenities, etc.)
+
+### GeoJSON coordinate orientation
+
+Canvas pixels use a top-left origin with Y increasing downward. GeoJSON coordinates are `[longitude, latitude]` where Y (latitude) increases upward. The exporter negates the Y axis on every coordinate so that geometry rendered in QGIS or any other GIS tool is not vertically flipped relative to the source floor plan.
+
+Polygon transforms (scale, rotation, skew) applied via the bounding-box handles are fully baked into exported vertex positions using Fabric's transform matrix, so the exported geometry matches exactly what you see on the canvas.
+
+## Canvas Layer Order
+
+Footprints (building and level) are always kept at the bottom of the canvas stack. Units, sections, amenities, fixtures, and openings are drawn above them. This order is enforced automatically whenever a new object is added or you switch levels, so footprints never block selection of objects drawn on top.
 
 ## Project Structure
 
@@ -239,7 +270,13 @@ IMDF-Builder-for-Places/
 - PDF.js for rendering PDF floor plans (first page)
 - Polygon drawing with click-to-place vertices and double-click-to-close
 - Per-vertex editing via draggable orange handle circles
-- Edge snapping using an offscreen canvas pixel-sampling approach
+- **Three-priority snap system**: vertex snap → edge snap → image pixel snap
+  - Vertex and edge snap enumerate all visible IMDF objects on the active level and apply the full Fabric transform matrix, ensuring accurate results on scaled or rotated polygons
+  - Image pixel snap samples the background floor plan's offscreen canvas and selects the *nearest* qualifying dark pixel (brightness threshold 40%) rather than the darkest, so two adjacent units independently drawn near the same wall both land on the same pixel
+- **Zoom toward cursor**: mouse-wheel zoom uses the cursor position as the focal point; toolbar buttons zoom toward the canvas centre
+- **Pan**: Space+drag or middle-mouse drag via Fabric's `relativePan`; pan state guards all drawing tools so no accidental vertices are placed during a pan gesture
+- **Canvas layer enforcement**: `_enforceZOrder()` keeps footprints below all other objects, called on every object insertion and level switch
+- **Coordinate export**: `_canvasToGeo(x, y)` converts pixel space to geographic space (negating Y); polygon world-space vertices computed via `calcTransformMatrix()` + `fabric.util.transformPoint()`
 - Shift-lock for 45° constrained line drawing
 - Dark mode via CSS custom properties and `data-theme` attribute
 - Toast notification system for user feedback
@@ -293,9 +330,24 @@ docker pull ghcr.io/loryanstrant/imdf-builder-for-places:v1.0.0
 - Double-click anywhere to close, or click directly on the first (green) vertex dot
 - Press **Escape** to cancel the current draw and start over
 
+### Issue: Units appear misaligned in QGIS / GIS tools
+- Ensure you are using the latest export — earlier versions did not negate the Y axis, causing a north-south flip
+- If geometry still appears rotated or scaled incorrectly, re-draw the affected polygons; old saves with manually-scaled/rotated polygons may have baked the wrong transform into the saved point data
+
 ### Issue: Edge snapping is too aggressive or not working
 - Toggle the **Edge Snapping** checkbox in the Place Items panel
-- Snapping relies on pixel sampling of the uploaded floor plan; it works best with high-contrast line drawings
+- Vertex and edge snap against drawn objects takes priority over image pixel snap — this means the cursor will prefer locking to an already-placed vertex over snapping to the background image
+- Image pixel snap works best with high-contrast line drawings (dark walls on a light background)
+- Zoom in before placing vertices; snap radius is fixed in canvas pixels, so zooming in gives you finer control
+
+### Issue: Panning doesn't work / Space bar isn't responding
+- Make sure the cursor is over the canvas when pressing Space
+- If a text input (e.g. a property field) is focused, Space types into it — click elsewhere on the canvas first
+- Middle-mouse drag works regardless of Space state
+
+### Issue: Zooming always jumps to the top-left corner
+- Use the scroll wheel to zoom toward your cursor position, or use the ＋/－ toolbar buttons to zoom toward the canvas centre
+- If you are on a version before this fix was applied, upgrade to the latest build
 
 ## Contributing
 

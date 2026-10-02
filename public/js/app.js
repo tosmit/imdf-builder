@@ -34,7 +34,13 @@ class IMDFBuilder {
         this.snapRadius = 12;       // pixels (canvas coords)
         this.snapCanvas = null;     // offscreen canvas for pixel sampling
         this.snapCtx = null;
-        
+
+        // Pan state
+        this.isPanning = false;     // true while a pan drag is in progress
+        this.panLastX  = 0;
+        this.panLastY  = 0;
+        this.spaceDown = false;     // Space bar held → temporary pan mode
+
         this.init();
     }
 
@@ -144,6 +150,72 @@ class IMDFBuilder {
                 this.updatePolygonVertex(obj);
             }
         });
+
+        // ── Zoom on mouse wheel (zoom toward cursor) ──────────────
+        this.canvas.on('mouse:wheel', (opt) => {
+            const delta = opt.e.deltaY;
+            let zoom = this.canvas.getZoom();
+            zoom *= 0.999 ** delta;
+            zoom = Math.min(Math.max(zoom, 0.05), 40);
+            this.canvas.zoomToPoint({ x: opt.e.offsetX, y: opt.e.offsetY }, zoom);
+            this._updateZoomDisplay(zoom);
+            opt.e.preventDefault();
+            opt.e.stopPropagation();
+        });
+
+        // ── Pan: middle-mouse drag ─────────────────────────────────
+        this.canvas.on('mouse:down', (opt) => {
+            const e = opt.e;
+            const isMiddle = e.button === 1;
+            const isSpaceDrag = this.spaceDown && e.button === 0;
+            if (isMiddle || isSpaceDrag) {
+                this.isPanning = true;
+                this.panLastX  = e.clientX;
+                this.panLastY  = e.clientY;
+                this.canvas.defaultCursor = 'grabbing';
+                this.canvas.setCursor('grabbing');
+                e.preventDefault();
+            }
+        });
+
+        this.canvas.on('mouse:move', (opt) => {
+            if (!this.isPanning) return;
+            const e = opt.e;
+            const dx = e.clientX - this.panLastX;
+            const dy = e.clientY - this.panLastY;
+            this.panLastX = e.clientX;
+            this.panLastY = e.clientY;
+            this.canvas.relativePan({ x: dx, y: dy });
+            this.canvas.renderAll();
+        });
+
+        this.canvas.on('mouse:up', (opt) => {
+            if (this.isPanning) {
+                this.isPanning = false;
+                this.canvas.defaultCursor = this.spaceDown ? 'grab' : 'default';
+                this.canvas.setCursor(this.spaceDown ? 'grab' : 'default');
+            }
+        });
+
+        // ── Space bar → temporary pan mode ────────────────────────
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space' && !e.repeat && !this._isTyping(e)) {
+                this.spaceDown = true;
+                this.canvas.defaultCursor = 'grab';
+                this.canvas.setCursor('grab');
+                // Prevent page scroll while drawing
+                e.preventDefault();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space') {
+                this.spaceDown = false;
+                this.isPanning = false;
+                this.canvas.defaultCursor = 'default';
+                this.canvas.setCursor('default');
+            }
+        });
     }
 
     attachEventListeners() {
@@ -239,6 +311,8 @@ class IMDFBuilder {
     }
 
     handleCanvasClick(event) {
+        // Pan takes priority — let the mouse:down pan handler deal with it
+        if (this.isPanning || this.spaceDown) return;
         if (!event.pointer || this.currentTool === 'select') return;
         // Ignore clicks on vertex handles
         if (event.target && event.target._vertexHandle) return;
@@ -279,6 +353,12 @@ class IMDFBuilder {
     }
 
     handleCanvasMove(event) {
+        // While panning just hide the snap cursor — no drawing preview needed
+        if (this.isPanning) {
+            this.updateSnapCursor(null, false);
+            return;
+        }
+
         const raw = this.canvas.getPointer(event.e);
         const pos = this.snapEnabled ? this.snapToEdge(raw) : raw;
 
@@ -332,7 +412,9 @@ class IMDFBuilder {
     }
 
     handleCanvasUp(event) {
-        if (!this.lineDragStart) return;
+        // If we were panning, the pan mouse:up handler already cleared isPanning.
+        // Either way, don't treat a pan-release as a line-drag finalization.
+        if (!this.lineDragStart || this.isPanning) return;
         if (this.currentTool !== 'fixture' && this.currentTool !== 'opening') {
             this.lineDragStart = null;
             return;
@@ -507,6 +589,7 @@ class IMDFBuilder {
         poly.imdfData = unit;
         this.units.push(unit);
         this.canvas.add(poly);
+        this._enforceZOrder();
         this.canvas.setActiveObject(poly);
         this.updateCounts();
     }
@@ -533,6 +616,7 @@ class IMDFBuilder {
         poly.imdfData = section;
         this.sections.push(section);
         this.canvas.add(poly);
+        this._enforceZOrder();
         this.canvas.setActiveObject(poly);
         this.updateCounts();
     }
@@ -613,7 +697,15 @@ class IMDFBuilder {
         this.canvas.renderAll();
     }
 
-    // ── Edge snapping ─────────────────────────────────────────────
+    // ── Snapping ──────────────────────────────────────────────────
+    //
+    // Priority order:
+    //   1. Vertex snap   — exact hit on an existing polygon/rect vertex
+    //   2. Edge snap     — nearest point on an existing polygon/rect edge
+    //   3. Image snap    — nearest dark pixel in the background floor plan
+    //
+    // If none of the above find a candidate within snapRadius the raw pointer
+    // is returned unchanged.
 
     // Build the offscreen sampling canvas whenever a new floor plan is loaded.
     // We draw the background image into an offscreen <canvas> at its natural
@@ -642,67 +734,182 @@ class IMDFBuilder {
         }
     }
 
-    // Map a canvas-coordinate point to the nearest dark edge pixel within
-    // snapRadius.  Returns the original point if no edge is found.
+    // Collect all world-space vertices from IMDF canvas objects (excluding
+    // temporary drawing aids like preview lines, dots, and vertex handles).
+    _collectObjectVertices() {
+        const verts = [];
+        this.canvas.getObjects().forEach(obj => {
+            if (!obj.imdfData) return;           // skip preview / handle objects
+            if (!obj.visible)  return;           // skip hidden (other-level) objects
+
+            if (obj.type === 'polygon' && obj.points) {
+                // Use the same world-transform logic as the exporter
+                const matrix = obj.calcTransformMatrix();
+                const ox = obj.pathOffset ? obj.pathOffset.x : 0;
+                const oy = obj.pathOffset ? obj.pathOffset.y : 0;
+                obj.points.forEach(p => {
+                    const world = fabric.util.transformPoint(
+                        new fabric.Point(p.x - ox, p.y - oy), matrix);
+                    verts.push({ x: world.x, y: world.y });
+                });
+            } else if (obj.type === 'rect') {
+                // Four corners via transform matrix
+                const matrix = obj.calcTransformMatrix();
+                const hw = (obj.width  * (obj.scaleX || 1)) / 2;
+                const hh = (obj.height * (obj.scaleY || 1)) / 2;
+                [[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh]].forEach(([lx,ly]) => {
+                    const world = fabric.util.transformPoint(
+                        new fabric.Point(lx, ly), matrix);
+                    verts.push({ x: world.x, y: world.y });
+                });
+            }
+            // Lines (fixtures/openings) expose endpoints directly
+            else if (obj.type === 'line') {
+                verts.push({ x: obj.x1, y: obj.y1 }, { x: obj.x2, y: obj.y2 });
+            }
+        });
+        return verts;
+    }
+
+    // Collect edges as pairs of world-space points from all visible IMDF objects.
+    _collectObjectEdges() {
+        const edges = [];
+        this.canvas.getObjects().forEach(obj => {
+            if (!obj.imdfData) return;
+            if (!obj.visible)  return;
+
+            let worldPts = [];
+            if (obj.type === 'polygon' && obj.points) {
+                const matrix = obj.calcTransformMatrix();
+                const ox = obj.pathOffset ? obj.pathOffset.x : 0;
+                const oy = obj.pathOffset ? obj.pathOffset.y : 0;
+                worldPts = obj.points.map(p => {
+                    const w = fabric.util.transformPoint(
+                        new fabric.Point(p.x - ox, p.y - oy), matrix);
+                    return { x: w.x, y: w.y };
+                });
+                // Close the ring
+                if (worldPts.length) worldPts.push(worldPts[0]);
+            } else if (obj.type === 'rect') {
+                const matrix = obj.calcTransformMatrix();
+                const hw = (obj.width  * (obj.scaleX || 1)) / 2;
+                const hh = (obj.height * (obj.scaleY || 1)) / 2;
+                worldPts = [[-hw,-hh],[hw,-hh],[hw,hh],[-hw,hh],[-hw,-hh]].map(([lx,ly]) => {
+                    const w = fabric.util.transformPoint(
+                        new fabric.Point(lx, ly), matrix);
+                    return { x: w.x, y: w.y };
+                });
+            } else if (obj.type === 'line') {
+                worldPts = [{ x: obj.x1, y: obj.y1 }, { x: obj.x2, y: obj.y2 }];
+            }
+
+            for (let i = 0; i + 1 < worldPts.length; i++) {
+                edges.push([worldPts[i], worldPts[i + 1]]);
+            }
+        });
+        return edges;
+    }
+
+    // Nearest point on a finite line segment [a→b] to point p.
+    _closestPointOnSegment(p, a, b) {
+        const abx = b.x - a.x, aby = b.y - a.y;
+        const lenSq = abx * abx + aby * aby;
+        if (lenSq === 0) return { x: a.x, y: a.y };
+        let t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / lenSq;
+        t = Math.max(0, Math.min(1, t));
+        return { x: a.x + t * abx, y: a.y + t * aby };
+    }
+
+    // Master snap entry point — replaces the old image-only snapToEdge.
     snapToEdge(pt) {
-        if (!this.snapEnabled || !this.snapCtx || !this.canvas.backgroundImage) return pt;
+        if (!this.snapEnabled) return pt;
+        const r = this.snapRadius;
+        const r2 = r * r;
+
+        // ── 1. Vertex snap ────────────────────────────────────────
+        let bestDist2 = r2;
+        let bestPt = null;
+
+        for (const v of this._collectObjectVertices()) {
+            const d2 = (v.x - pt.x) ** 2 + (v.y - pt.y) ** 2;
+            if (d2 < bestDist2) {
+                bestDist2 = d2;
+                bestPt = { x: v.x, y: v.y };
+            }
+        }
+        if (bestPt) return bestPt;
+
+        // ── 2. Edge snap ──────────────────────────────────────────
+        bestDist2 = r2;
+
+        for (const [a, b] of this._collectObjectEdges()) {
+            const closest = this._closestPointOnSegment(pt, a, b);
+            const d2 = (closest.x - pt.x) ** 2 + (closest.y - pt.y) ** 2;
+            if (d2 < bestDist2) {
+                bestDist2 = d2;
+                bestPt = closest;
+            }
+        }
+        if (bestPt) return bestPt;
+
+        // ── 3. Image edge snap ────────────────────────────────────
+        if (!this.snapCtx || !this.canvas.backgroundImage) return pt;
 
         const bg = this.canvas.backgroundImage;
-        // Background image transform: position and scale
         const bgScaleX = bg.scaleX || 1;
         const bgScaleY = bg.scaleY || 1;
         const bgLeft   = bg.left   || 0;
         const bgTop    = bg.top    || 0;
-        const bgW = (bg._originalElement ? (bg._originalElement.naturalWidth  || bg.width) : bg.width)  || 1;
-        const bgH = (bg._originalElement ? (bg._originalElement.naturalHeight || bg.height) : bg.height) || 1;
+        const bgW = (bg._originalElement
+            ? (bg._originalElement.naturalWidth  || bg.width)
+            : bg.width)  || 1;
+        const bgH = (bg._originalElement
+            ? (bg._originalElement.naturalHeight || bg.height)
+            : bg.height) || 1;
         const bgOriginX = bgLeft - (bgW * bgScaleX) / 2;
         const bgOriginY = bgTop  - (bgH * bgScaleY) / 2;
 
-        // Convert canvas coords → image pixel coords
         const imgX = (pt.x - bgOriginX) / bgScaleX;
         const imgY = (pt.y - bgOriginY) / bgScaleY;
-
-        // Scale snap radius from canvas coords to image coords
         const imgRadius = this.snapRadius / Math.min(bgScaleX, bgScaleY);
 
-        let bestX = pt.x, bestY = pt.y;
-        let bestEdge = 0;
-        let found = false;
-
-        const r = Math.ceil(imgRadius);
+        const rc = Math.ceil(imgRadius);
         const cx = Math.round(imgX), cy = Math.round(imgY);
-        const x0 = Math.max(0, cx - r), x1 = Math.min(this.snapCanvas.width  - 1, cx + r);
-        const y0 = Math.max(0, cy - r), y1 = Math.min(this.snapCanvas.height - 1, cy + r);
+        const x0 = Math.max(0, cx - rc), x1 = Math.min(this.snapCanvas.width  - 1, cx + rc);
+        const y0 = Math.max(0, cy - rc), y1 = Math.min(this.snapCanvas.height - 1, cy + rc);
 
         if (x0 >= x1 || y0 >= y1) return pt;
 
         const imgData = this.snapCtx.getImageData(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
-        const data = imgData.data;
-        const stride = (x1 - x0 + 1) * 4;
+        const pxData  = imgData.data;
+        const stride  = (x1 - x0 + 1) * 4;
+
+        // Pick the NEAREST qualifying dark pixel (not the darkest) so we land
+        // consistently on the same edge of a wall regardless of draw order.
+        let bestImgDist2 = imgRadius * imgRadius + 1;
+        let foundImg = false;
+        let bestImgX = pt.x, bestImgY = pt.y;
 
         for (let dy = 0; dy <= y1 - y0; dy++) {
             for (let dx = 0; dx <= x1 - x0; dx++) {
                 const px = x0 + dx, py = y0 + dy;
-                const distSq = (px - imgX) ** 2 + (py - imgY) ** 2;
-                if (distSq > imgRadius * imgRadius) continue;
+                const d2 = (px - imgX) ** 2 + (py - imgY) ** 2;
+                if (d2 > imgRadius * imgRadius) continue;
 
                 const idx = dy * stride + dx * 4;
-                const r_val = data[idx], g_val = data[idx+1], b_val = data[idx+2];
-                const brightness = (r_val + g_val + b_val) / 3;
-                // Lower brightness = darker = more likely an edge/wall
-                const edgeScore = (255 - brightness) / 255;
+                const brightness = (pxData[idx] + pxData[idx+1] + pxData[idx+2]) / 3;
+                const edgeScore  = (255 - brightness) / 255;
 
-                if (edgeScore > 0.4 && edgeScore > bestEdge) {
-                    bestEdge = edgeScore;
-                    // Convert back to canvas coords
-                    bestX = bgOriginX + px * bgScaleX;
-                    bestY = bgOriginY + py * bgScaleY;
-                    found = true;
+                if (edgeScore > 0.4 && d2 < bestImgDist2) {
+                    bestImgDist2 = d2;
+                    bestImgX = bgOriginX + px * bgScaleX;
+                    bestImgY = bgOriginY + py * bgScaleY;
+                    foundImg = true;
                 }
             }
         }
 
-        return found ? { x: bestX, y: bestY } : pt;
+        return foundImg ? { x: bestImgX, y: bestImgY } : pt;
     }
 
     // ── Rectangle unit (legacy quick-place) ──────────────────────
@@ -731,6 +938,7 @@ class IMDFBuilder {
         rect.imdfData = unit;
         this.units.push(unit);
         this.canvas.add(rect);
+        this._enforceZOrder();
         this.updateCounts();
     }
 
@@ -756,6 +964,7 @@ class IMDFBuilder {
         circle.imdfData = amenity;
         this.amenities.push(amenity);
         this.canvas.add(circle);
+        this._enforceZOrder();
         this.updateCounts();
     }
 
@@ -774,6 +983,7 @@ class IMDFBuilder {
         line.imdfData = fixture;
         this.fixtures.push(fixture);
         this.canvas.add(line);
+        this._enforceZOrder();
         this.updateCounts();
     }
 
@@ -792,6 +1002,7 @@ class IMDFBuilder {
         line.imdfData = opening;
         this.openings.push(opening);
         this.canvas.add(line);
+        this._enforceZOrder();
         this.updateCounts();
     }
 
@@ -1032,8 +1243,27 @@ class IMDFBuilder {
                 obj.set({ visible, evented: visible, selectable: visible });
             }
         });
+        this._enforceZOrder();
         this.canvas.discardActiveObject();
         this.canvas.renderAll();
+    }
+
+    // Ensure footprints always sit below units/sections/amenities/fixtures/openings.
+    // Call this whenever the canvas object list changes (new object added, level switched).
+    // Order from bottom to top: building-footprint → level-footprints → everything else.
+    _enforceZOrder() {
+        const objects = this.canvas.getObjects();
+
+        // Collect footprints in desired bottom-to-top order
+        const buildingFootprints = objects.filter(o => o.imdfData && o.imdfData.type === 'building-footprint');
+        const levelFootprints    = objects.filter(o => o.imdfData && o.imdfData.type === 'level-footprint');
+
+        // Send building footprints to absolute back first (they end up below level footprints)
+        buildingFootprints.forEach(o => this.canvas.sendToBack(o));
+        // Then send level footprints just above the building footprint
+        levelFootprints.forEach(o => this.canvas.sendToBack(o));
+        // Net result: building-footprint(s) at index 0, level-footprints above them,
+        // all units/sections/amenities/fixtures/openings above those.
     }
 
     removeLevel(levelId) {
@@ -1211,18 +1441,31 @@ class IMDFBuilder {
     }
 
     zoomIn() {
-        const zoom = this.canvas.getZoom();
-        this.canvas.setZoom(zoom * 1.1);
+        this._zoomAroundCenter(this.canvas.getZoom() * 1.2);
     }
 
     zoomOut() {
-        const zoom = this.canvas.getZoom();
-        this.canvas.setZoom(zoom * 0.9);
+        this._zoomAroundCenter(this.canvas.getZoom() / 1.2);
+    }
+
+    // Zoom toward the visible centre of the canvas so the content stays centred
+    // when using the toolbar buttons (mouse-wheel zoom uses the cursor position).
+    _zoomAroundCenter(newZoom) {
+        newZoom = Math.min(Math.max(newZoom, 0.05), 40);
+        const cx = this.canvas.getWidth()  / 2;
+        const cy = this.canvas.getHeight() / 2;
+        this.canvas.zoomToPoint({ x: cx, y: cy }, newZoom);
+        this._updateZoomDisplay(newZoom);
+    }
+
+    _updateZoomDisplay(zoom) {
+        const el = document.getElementById('zoomLevel');
+        if (el) el.textContent = Math.round(zoom * 100) + '%';
     }
 
     resetView() {
-        this.canvas.setZoom(1);
-        this.canvas.viewportTransform = [1, 0, 0, 1, 0, 0];
+        this.canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+        this._updateZoomDisplay(1);
         this.canvas.renderAll();
     }
 
@@ -1805,6 +2048,13 @@ class IMDFBuilder {
         });
     }
 
+    // Returns true when the keyboard event originates from a text input / textarea
+    // so we don't hijack Space while the user is typing in a property field.
+    _isTyping(e) {
+        const tag = e.target && e.target.tagName;
+        return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+    }
+
     parseCoordinates(str) {
         const parts = str.split(',').map(s => parseFloat(s.trim()));
         return parts.length === 2 ? parts : [0, 0];
@@ -1851,57 +2101,98 @@ class IMDFBuilder {
         };
     }
 
+    // ── Coordinate conversion helpers ────────────────────────────
+    //
+    // Canvas pixels use a top-left origin with Y increasing downward.
+    // GeoJSON uses [longitude, latitude] where Y (latitude) increases upward.
+    // We therefore negate Y on every export so the geometry is not vertically
+    // flipped when loaded into QGIS or any other GIS tool.
+    //
+    // The 1/100000 scale factor converts pixel positions into a roughly
+    // degree-scale coordinate space (placeholder until real georeferencing
+    // is implemented).
+    //
+    // For polygons we apply the full Fabric transform matrix so that any
+    // scale, rotation, or skew applied to the object via the bounding-box
+    // handles is baked into the exported vertex positions.
+
+    _canvasToGeo(canvasX, canvasY) {
+        // Negate Y to flip from screen space (Y-down) to geo space (Y-up)
+        return [canvasX / 100000, -canvasY / 100000];
+    }
+
+    // Return world-space vertices for a Fabric polygon, honouring all
+    // transforms (left/top/scaleX/scaleY/angle/skew).
+    _polygonWorldPoints(obj) {
+        const matrix = obj.calcTransformMatrix();
+        const ox = obj.pathOffset ? obj.pathOffset.x : 0;
+        const oy = obj.pathOffset ? obj.pathOffset.y : 0;
+        return obj.points.map(p => {
+            // Points are stored relative to the polygon's pathOffset origin.
+            // Translate to local origin, then apply the full object transform.
+            const local = new fabric.Point(p.x - ox, p.y - oy);
+            const world = fabric.util.transformPoint(local, matrix);
+            return world;
+        });
+    }
+
     getObjectCoordinates(obj) {
         if (!obj) return [[[0, 0], [0, 0.0001], [0.0001, 0.0001], [0.0001, 0], [0, 0]]];
 
-        // Fabric Polygon — export its actual vertices
+        // Fabric Polygon — apply full transform matrix so scale/rotation are baked in
         if (obj.type === 'polygon' && obj.points) {
-            const coords = obj.points.map(p => [
-                (obj.left + p.x - (obj.pathOffset ? obj.pathOffset.x : 0)) / 100000,
-                (obj.top  + p.y - (obj.pathOffset ? obj.pathOffset.y : 0)) / 100000
-            ]);
+            const worldPts = this._polygonWorldPoints(obj);
+            const coords = worldPts.map(p => this._canvasToGeo(p.x, p.y));
             // Close the ring
             if (coords.length > 0) coords.push(coords[0]);
             return [coords];
         }
 
-        // Fabric Rect (legacy rectangle units)
-        const left   = obj.left / 100000;
-        const top    = obj.top  / 100000;
-        const width  = (obj.width  * (obj.scaleX || 1)) / 100000;
-        const height = (obj.height * (obj.scaleY || 1)) / 100000;
-        
-        return [[
-            [left, top],
-            [left, top + height],
-            [left + width, top + height],
-            [left + width, top],
-            [left, top]
-        ]];
+        // Fabric Rect (legacy rectangle units) — compute all four corners
+        // by applying the full transform so rotation is respected.
+        const matrix = obj.calcTransformMatrix();
+        const hw = (obj.width  * (obj.scaleX || 1)) / 2;
+        const hh = (obj.height * (obj.scaleY || 1)) / 2;
+        // Corners in local space (centred on origin because calcTransformMatrix
+        // already includes the left/top translation)
+        const corners = [
+            { x: -hw, y: -hh },
+            { x:  hw, y: -hh },
+            { x:  hw, y:  hh },
+            { x: -hw, y:  hh }
+        ].map(c => {
+            const w = fabric.util.transformPoint(new fabric.Point(c.x, c.y), matrix);
+            return this._canvasToGeo(w.x, w.y);
+        });
+        corners.push(corners[0]); // close the ring
+        return [corners];
     }
 
     getDisplayPoint(obj) {
         if (!obj) return { type: 'Point', coordinates: [0, 0] };
-        
+
+        // Use the object's actual centre in world space
+        const center = obj.getCenterPoint
+            ? obj.getCenterPoint()
+            : { x: obj.left, y: obj.top };
+
         return {
             type: 'Point',
-            coordinates: [
-                (obj.left + (obj.width * obj.scaleX) / 2) / 100000,
-                (obj.top + (obj.height * obj.scaleY) / 2) / 100000
-            ]
+            coordinates: this._canvasToGeo(center.x, center.y)
         };
     }
 
     getPointCoordinates(obj) {
         if (!obj) return [0, 0];
-        return [obj.left / 100000, obj.top / 100000];
+        return this._canvasToGeo(obj.left, obj.top);
     }
 
     getLineCoordinates(obj) {
         if (!obj) return [[0, 0], [0, 0.0001]];
+        // Lines store absolute canvas coords in x1/y1/x2/y2
         return [
-            [obj.x1 / 100000, obj.y1 / 100000],
-            [obj.x2 / 100000, obj.y2 / 100000]
+            this._canvasToGeo(obj.x1, obj.y1),
+            this._canvasToGeo(obj.x2, obj.y2)
         ];
     }
 
