@@ -339,24 +339,32 @@ class IMDFBuilder {
             return;
         }
 
+        // Apply shift-lock for polygon tools — constrain against the previous vertex
+        const polyTools = ['unit', 'section', 'building-footprint', 'level-footprint'];
+        let finalPointer = pointer;
+        if (polyTools.includes(this.currentTool) && this.polyPoints.length > 0) {
+            const prev = this.polyPoints[this.polyPoints.length - 1];
+            finalPointer = this._applyShiftLock(prev, pointer, event.e);
+        }
+
         switch (this.currentTool) {
             case 'unit':
-                this.handlePolygonClick(pointer, 'unit');
+                this.handlePolygonClick(finalPointer, 'unit');
                 break;
             case 'section':
-                this.handlePolygonClick(pointer, 'section');
+                this.handlePolygonClick(finalPointer, 'section');
                 break;
             case 'building-footprint':
-                this.handlePolygonClick(pointer, 'building-footprint');
+                this.handlePolygonClick(finalPointer, 'building-footprint');
                 break;
             case 'level-footprint':
-                this.handlePolygonClick(pointer, 'level-footprint');
+                this.handlePolygonClick(finalPointer, 'level-footprint');
                 break;
             case 'unit-rect':
-                this.placeRectUnit(pointer);
+                this.placeRectUnit(finalPointer);
                 break;
             case 'amenity':
-                this.placeAmenity(pointer);
+                this.placeAmenity(finalPointer);
                 break;
         }
     }
@@ -396,10 +404,12 @@ class IMDFBuilder {
         const polyTools = ['unit', 'section', 'building-footprint', 'level-footprint'];
         if (polyTools.includes(this.currentTool) && this.polyPoints.length > 0) {
             const last = this.polyPoints[this.polyPoints.length - 1];
+            // Apply shift-lock so the preview matches what a click would place
+            const previewEnd = this._applyShiftLock(last, pos, event.e);
             if (this.previewLine) {
-                this.previewLine.set({ x1: last.x, y1: last.y, x2: pos.x, y2: pos.y });
+                this.previewLine.set({ x1: last.x, y1: last.y, x2: previewEnd.x, y2: previewEnd.y });
             } else {
-                this.previewLine = new fabric.Line([last.x, last.y, pos.x, pos.y], {
+                this.previewLine = new fabric.Line([last.x, last.y, previewEnd.x, previewEnd.y], {
                     stroke: '#ff5c00',
                     strokeWidth: 1.5,
                     strokeDashArray: [4, 4],
@@ -452,16 +462,19 @@ class IMDFBuilder {
         }
     }
 
-    // Snap end point to horizontal or vertical when Shift is held
+    // Constrain end point to 45° increments relative to start when Shift is held.
+    // Snaps to the nearest of 0°, 45°, 90°, 135°, 180°, 225°, 270°, 315°.
     _applyShiftLock(start, end, nativeEvent) {
         if (!nativeEvent || !nativeEvent.shiftKey) return end;
         const dx = end.x - start.x;
         const dy = end.y - start.y;
-        if (Math.abs(dx) >= Math.abs(dy)) {
-            return { x: end.x, y: start.y }; // horizontal
-        } else {
-            return { x: start.x, y: end.y }; // vertical
-        }
+        const angle = Math.atan2(dy, dx);                  // radians, -π to π
+        const snapped = Math.round(angle / (Math.PI / 4)) * (Math.PI / 4);  // nearest 45°
+        const dist = Math.hypot(dx, dy);
+        return {
+            x: start.x + Math.round(Math.cos(snapped) * dist),
+            y: start.y + Math.round(Math.sin(snapped) * dist)
+        };
     }
 
     updateSnapCursor(snapped, show) {

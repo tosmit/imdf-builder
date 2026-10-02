@@ -22,7 +22,7 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
   2. **Edge snap** — snaps to the nearest point on an existing polygon or line edge
   3. **Image edge snap** — falls back to dark-pixel detection in the background floor plan image
   - Toggle on/off with the **Edge Snapping** checkbox
-- 🔒 **Shift-Lock**: Hold Shift while drawing lines to constrain to 45° angles
+- 🔒 **Shift-Lock**: Hold Shift while placing any vertex or drawing a line to constrain to 45° increments (0°, 45°, 90°, 135°, and their opposites)
 - 🔍 **Zoom & Pan**:
   - Scroll wheel zooms toward the cursor position
   - Toolbar **＋ / －** buttons zoom toward the canvas centre
@@ -180,7 +180,7 @@ Select a tool from the **Units & Spaces** or **Other** groups:
 | **Select Mode** | Click to select and move any object |
 
 **Tips:**
-- Hold **Shift** while dragging a line to constrain it to 45° increments.
+- Hold **Shift** while placing a polygon vertex or dragging a fixture/opening line to constrain to 45° increments (horizontal, vertical, and diagonal).
 - Enable **Edge Snapping** to snap vertices to existing objects first, then to floor-plan image lines as a fallback — this ensures adjacent units share exact vertices.
 - Select any polygon and drag its orange vertex dots to fine-tune its shape.
 - Zoom in before placing vertices on dense floor plans to get precise snapping results.
