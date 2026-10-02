@@ -1981,14 +1981,21 @@ class IMDFBuilder {
         const points = polygon.points;
         if (!points) return;
 
-        // pathOffset is the polygon's internal origin used by Fabric
+        // Convert each point from polygon-local space to canvas world space using
+        // the full transform matrix (handles position, scale, rotation, skew).
+        // pathOffset is the local-space origin Fabric centres the polygon on.
+        const matrix = polygon.calcTransformMatrix();
         const ox = polygon.pathOffset ? polygon.pathOffset.x : 0;
         const oy = polygon.pathOffset ? polygon.pathOffset.y : 0;
 
         this.vertexHandles = points.map((pt, i) => {
+            const world = fabric.util.transformPoint(
+                new fabric.Point(pt.x - ox, pt.y - oy),
+                matrix
+            );
             const handle = new fabric.Circle({
-                left:    polygon.left + pt.x - ox,
-                top:     polygon.top  + pt.y - oy,
+                left:    world.x,
+                top:     world.y,
                 radius: 6,
                 fill: '#ff5c00',
                 stroke: '#ffffff',
@@ -2032,9 +2039,6 @@ class IMDFBuilder {
         const i = handle._vertexIndex;
         if (!polygon || i === undefined) return;
 
-        const ox = polygon.pathOffset ? polygon.pathOffset.x : 0;
-        const oy = polygon.pathOffset ? polygon.pathOffset.y : 0;
-
         // Snap to edge if enabled
         const raw = { x: handle.left, y: handle.top };
         const snapped = this.snapEnabled ? this.snapToEdge(raw) : raw;
@@ -2042,11 +2046,18 @@ class IMDFBuilder {
         // Move handle to snapped position
         handle.set({ left: snapped.x, top: snapped.y });
 
-        // Update the polygon's point — coords are relative to polygon.left/top minus pathOffset
-        polygon.points[i] = {
-            x: snapped.x - polygon.left + ox,
-            y: snapped.y - polygon.top  + oy
-        };
+        // Convert the world-space handle position back to polygon-local space.
+        // invertTransform gives us the matrix that undoes position/scale/rotation.
+        const matrix    = polygon.calcTransformMatrix();
+        const invMatrix = fabric.util.invertTransform(matrix);
+        const local     = fabric.util.transformPoint(
+            new fabric.Point(snapped.x, snapped.y), invMatrix
+        );
+
+        // Points are stored relative to pathOffset in local space
+        const ox = polygon.pathOffset ? polygon.pathOffset.x : 0;
+        const oy = polygon.pathOffset ? polygon.pathOffset.y : 0;
+        polygon.points[i] = { x: local.x + ox, y: local.y + oy };
 
         // Force Fabric to recompute the polygon geometry
         polygon.set({ dirty: true });
