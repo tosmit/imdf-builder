@@ -1017,6 +1017,9 @@ class IMDFBuilder {
 
     handleSelection(event) {
         const obj = event.selected[0];
+        // If the user clicked a vertex handle, don't disturb the handle set
+        if (obj && obj._vertexHandle) return;
+
         if (obj && obj.imdfData) {
             this.selectedObject = obj;
             this.showProperties(obj.imdfData);
