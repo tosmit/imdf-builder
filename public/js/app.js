@@ -1263,6 +1263,7 @@ class IMDFBuilder {
         if (btn) {
             btn.textContent = this.floorplanVisible ? '🖼 Hide Floor Plan' : '🖼 Show Floor Plan';
             btn.classList.toggle('active', !this.floorplanVisible);
+            btn.blur();
         }
         this.showToast(`Floor plan ${this.floorplanVisible ? 'shown' : 'hidden'}`, 'info');
     }
