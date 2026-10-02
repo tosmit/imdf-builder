@@ -35,6 +35,9 @@ class IMDFBuilder {
         this.snapCanvas = null;     // offscreen canvas for pixel sampling
         this.snapCtx = null;
 
+        // Floor plan visibility toggle
+        this.floorplanVisible = true;
+
         // Pan state
         this.isPanning = false;     // true while a pan drag is in progress
         this.panLastX  = 0;
@@ -256,6 +259,12 @@ class IMDFBuilder {
                 this.snapEnabled = e.target.checked;
                 this.showToast(`Edge snapping ${this.snapEnabled ? 'on' : 'off'}`, 'info');
             });
+        }
+
+        // Floor plan visibility toggle
+        const floorplanToggleBtn = document.getElementById('floorplanToggleBtn');
+        if (floorplanToggleBtn) {
+            floorplanToggleBtn.addEventListener('click', () => this.toggleFloorplan());
         }
 
         // Modal close
@@ -1227,6 +1236,28 @@ class IMDFBuilder {
             this.snapCtx = null;
             this.canvas.renderAll();
         }
+        // Re-apply current visibility state after a floor plan swap
+        this._applyFloorplanVisibility();
+    }
+
+    toggleFloorplan() {
+        this.floorplanVisible = !this.floorplanVisible;
+        this._applyFloorplanVisibility();
+        const btn = document.getElementById('floorplanToggleBtn');
+        if (btn) {
+            btn.textContent = this.floorplanVisible ? '🖼 Hide Floor Plan' : '🖼 Show Floor Plan';
+            btn.classList.toggle('active', !this.floorplanVisible);
+        }
+        this.showToast(`Floor plan ${this.floorplanVisible ? 'shown' : 'hidden'}`, 'info');
+    }
+
+    // Apply the current floorplanVisible state to the background image opacity.
+    // The image object is kept intact (so snap still works) — only its opacity changes.
+    _applyFloorplanVisibility() {
+        const bg = this.canvas.backgroundImage;
+        if (!bg) return;
+        bg.set({ opacity: this.floorplanVisible ? 1 : 0 });
+        this.canvas.renderAll();
     }
 
     updateLevelVisibility() {
@@ -1369,6 +1400,7 @@ class IMDFBuilder {
         this.canvas.backgroundImage = img;
         this.refitBackground();
         this.buildSnapCanvas();
+        this._applyFloorplanVisibility();
         this.canvas.renderAll();
     }
 
@@ -1437,6 +1469,7 @@ class IMDFBuilder {
         this.canvas.backgroundImage = group;
         this.refitBackground();
         this.buildSnapCanvas();
+        this._applyFloorplanVisibility();
         this.canvas.renderAll();
     }
 

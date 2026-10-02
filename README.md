@@ -28,6 +28,7 @@ A user-friendly web application to create Indoor Mapping Data Format (IMDF) file
   - Toolbar **＋ / －** buttons zoom toward the canvas centre
   - **Space + drag** or **middle-mouse drag** to pan the canvas
   - Current zoom level shown in the toolbar
+- 🖼️ **Floor Plan Toggle**: Hide or show the background floor plan image without removing it — snapping to existing objects and image edges still works while the image is hidden
 - 💾 **Project Management**: Save and load projects for later editing; per-level floor plan images are saved with the project
 - 📦 **Export**: Generate a complete IMDF file package as a ZIP archive (includes `section.geojson` and all other required files)
 - 🗺️ **Correct GeoJSON orientation**: Exported coordinates negate the Y axis to match geographic convention (Y increases northward), and polygon transforms (scale, rotation) are fully baked into exported vertex positions
@@ -159,8 +160,11 @@ Click to place each vertex, then double-click (or click the first vertex) to clo
 | **Zoom in/out** | Scroll wheel (zooms toward cursor) or toolbar ＋/－ buttons |
 | **Pan** | Hold **Space** and drag, or drag with the **middle mouse button** |
 | **Reset view** | Click **⤢ Reset View** in the toolbar |
+| **Hide/show floor plan** | Click **🖼 Hide Floor Plan** in the toolbar to toggle the background image |
 
 The current zoom percentage is shown in the toolbar next to the zoom buttons.
+
+> **Tip:** Hiding the floor plan makes it easier to fine-tune unit boundaries and see how adjacent units align without the background image adding visual noise. Snapping to existing vertices and edges continues to work while the floor plan is hidden.
 
 ### Step 6: Place Items on the Floor Plan
 Select a tool from the **Units & Spaces** or **Other** groups:
@@ -275,6 +279,7 @@ IMDF-Builder-for-Places/
   - Image pixel snap samples the background floor plan's offscreen canvas and selects the *nearest* qualifying dark pixel (brightness threshold 40%) rather than the darkest, so two adjacent units independently drawn near the same wall both land on the same pixel
 - **Zoom toward cursor**: mouse-wheel zoom uses the cursor position as the focal point; toolbar buttons zoom toward the canvas centre
 - **Pan**: Space+drag or middle-mouse drag via Fabric's `relativePan`; pan state guards all drawing tools so no accidental vertices are placed during a pan gesture
+- **Floor plan visibility toggle**: sets the background image object's `opacity` to 0 or 1 rather than removing it — the offscreen pixel-sampling canvas is preserved so image edge snap continues to work while the floor plan is visually hidden
 - **Canvas layer enforcement**: `_enforceZOrder()` keeps footprints below all other objects, called on every object insertion and level switch
 - **Coordinate export**: `_canvasToGeo(x, y)` converts pixel space to geographic space (negating Y); polygon world-space vertices computed via `calcTransformMatrix()` + `fabric.util.transformPoint()`
 - Shift-lock for 45° constrained line drawing
