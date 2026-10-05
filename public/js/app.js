@@ -2241,8 +2241,13 @@ class IMDFBuilder {
         // Fabric Rect (legacy rectangle units) — compute all four corners
         // by applying the full transform so rotation is respected.
         const matrix = obj.calcTransformMatrix();
-        const hw = (obj.width  * (obj.scaleX || 1)) / 2;
-        const hh = (obj.height * (obj.scaleY || 1)) / 2;
+        // IMPORTANT: calcTransformMatrix() already includes scaleX/scaleY, so the
+        // local-space corners below must use the UNSCALED half-width/height.
+        // Pre-multiplying by scaleX/scaleY here would double-apply the scale
+        // (once here, once via the matrix), shrinking/misplacing every resized
+        // rectangle unit on export relative to how it actually renders on canvas.
+        const hw = obj.width  / 2;
+        const hh = obj.height / 2;
         // Corners in local space (centred on origin because calcTransformMatrix
         // already includes the left/top translation)
         const corners = [
