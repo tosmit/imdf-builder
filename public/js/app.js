@@ -2176,10 +2176,39 @@ class IMDFBuilder {
     // For polygons we apply the full Fabric transform matrix so that any
     // scale, rotation, or skew applied to the object via the bounding-box
     // handles is baked into the exported vertex positions.
+    //
+    // GeoJSON spec (and QGIS) require exterior rings to be counter-clockwise
+    // (CCW). Negating Y to flip the coordinate system also reverses winding
+    // order, so we explicitly enforce CCW on every exported ring.
 
     _canvasToGeo(canvasX, canvasY) {
         // Negate Y to flip from screen space (Y-down) to geo space (Y-up)
         return [canvasX / 100000, -canvasY / 100000];
+    }
+
+    // Compute the signed area of a closed ring using the shoelace formula.
+    // Positive = CCW in standard math coords, negative = CW.
+    _signedArea(ring) {
+        let area = 0;
+        const n = ring.length;
+        for (let i = 0; i < n - 1; i++) {
+            area += ring[i][0] * ring[i + 1][1];
+            area -= ring[i + 1][0] * ring[i][1];
+        }
+        return area / 2;
+    }
+
+    // Ensure a ring (array of [x,y] pairs, first === last) is CCW.
+    // GeoJSON exterior rings must be CCW; CW rings are treated as holes by QGIS.
+    _ensureCCW(ring) {
+        // Remove closing vertex for the area check, then re-close after reversing.
+        const open = ring.slice(0, -1);
+        if (this._signedArea(ring) < 0) {
+            // CW — reverse to make CCW, then re-close
+            open.reverse();
+            return [...open, open[0]];
+        }
+        return ring;
     }
 
     // Return world-space vertices for a Fabric polygon, honouring all
@@ -2204,9 +2233,9 @@ class IMDFBuilder {
         if (obj.type === 'polygon' && obj.points) {
             const worldPts = this._polygonWorldPoints(obj);
             const coords = worldPts.map(p => this._canvasToGeo(p.x, p.y));
-            // Close the ring
+            // Close the ring, then enforce CCW winding for GeoJSON compliance
             if (coords.length > 0) coords.push(coords[0]);
-            return [coords];
+            return [this._ensureCCW(coords)];
         }
 
         // Fabric Rect (legacy rectangle units) — compute all four corners
@@ -2226,7 +2255,7 @@ class IMDFBuilder {
             return this._canvasToGeo(w.x, w.y);
         });
         corners.push(corners[0]); // close the ring
-        return [corners];
+        return [this._ensureCCW(corners)];
     }
 
     getDisplayPoint(obj) {
